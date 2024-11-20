@@ -1,0 +1,557 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <time.h>
+#include <string.h>
+
+#define INPUT_SIZE 65536  // 256 * 256 픽셀
+#define HIDDEN_SIZE_1 24  // 첫 번째 은닉층 노드 개수
+#define HIDDEN_SIZE_2 24   // 두 번째 은닉층 노드 개수
+#define HIDDEN_SIZE_3 24
+#define OUTPUT_SIZE 4    // 고양이, 개, 호랑이, 하이에나 (4개의 클래스)
+#define LEARNING_RATE 0.001  // 학습률
+#define EPOCHS 100  // 학습 횟수
+
+// 활성화 함수 (ReLU와 시그모이드)
+float relu(float f) {
+    return (f > 0) ? f : 0;  // ReLU
+}
+
+double relu_derivative(double x) {
+    return (x > 0) ? 1 : 0;  // x가 0보다 크면 1, 아니면 0을 반환
+}
+
+float sigmoid(float f) {
+    return 1 / (1 + exp(-f));
+}
+
+
+float sigmoid_derivative(float f) {
+    return f * (1 - f);  // 시그모이드 도함수
+}
+
+
+// BMP 파일 읽기 및 정규화
+void read_and_normalize_bmp(const char *filename, float input[]) 
+{
+    FILE *file = fopen(filename, "rb");
+    if (file == NULL) {
+        perror("파일을 열 수 없습니다.");
+        exit(1);
+    }
+
+    fseek(file, 18, SEEK_SET);  // 이미지 크기 정보로 이동
+    int width, height;
+    fread(&width, sizeof(int), 1, file);
+    fread(&height, sizeof(int), 1, file);
+
+    fseek(file, 54, SEEK_SET);  // 실제 이미지 데이터로 이동
+    unsigned char pixel[3];
+    int index = 0;
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            fread(pixel, 3, 1, file);
+            float gray = (pixel[0] + pixel[1] + pixel[2]) / 3.0f;
+            input[index++] = (gray / 255.0f) * 0.0001 ;  // 0~1 사이로 정규화
+        }
+    }
+
+    fclose(file);
+}
+
+// 신경망 구조체
+typedef struct {
+    float input[INPUT_SIZE];
+    float hidden_1[HIDDEN_SIZE_1];
+    float hidden_2[HIDDEN_SIZE_2];
+    float hidden_3[HIDDEN_SIZE_3];
+    float output[OUTPUT_SIZE];
+    float **weights_input_hidden_1; // 입력층 -> 첫 번째 은닉층 가중치
+    float **weights_hidden_1_hidden_2; // 첫 번째 -> 두 번째 은닉층 가중치
+    float **weights_hidden_2_hidden_3; // 두 번째 -> 세 번째 은닉충 가중치
+    float **weights_hidden_3_output;
+    float bias_hidden_1[HIDDEN_SIZE_1];
+    float bias_hidden_2[HIDDEN_SIZE_2];
+    float bias_hidden_3[HIDDEN_SIZE_3];
+    float bias_output[OUTPUT_SIZE];
+    float hidden_1_error[HIDDEN_SIZE_1];
+    float hidden_2_error[HIDDEN_SIZE_2];
+    float hidden_3_error[HIDDEN_SIZE_3];
+    float output_error[OUTPUT_SIZE];
+} NeuralNetwork;
+
+// 동적 메모리 할당
+void allocate_weights(NeuralNetwork *network) {
+    network->weights_input_hidden_1 = (float **)malloc(INPUT_SIZE * sizeof(float *));
+    for (int i = 0; i < INPUT_SIZE; i++) {
+        network->weights_input_hidden_1[i] = (float *)malloc(HIDDEN_SIZE_1 * sizeof(float));
+    }
+
+    network->weights_hidden_1_hidden_2 = (float **)malloc(HIDDEN_SIZE_1 * sizeof(float *));
+    for (int i = 0; i < HIDDEN_SIZE_1; i++) {
+        network->weights_hidden_1_hidden_2[i] = (float *)malloc(HIDDEN_SIZE_2 * sizeof(float));
+    }
+
+    network->weights_hidden_2_hidden_3= (float **)malloc(HIDDEN_SIZE_2 * sizeof(float *));
+    for (int i = 0; i < HIDDEN_SIZE_2; i++) {
+        network->weights_hidden_2_hidden_3[i] = (float *)malloc(HIDDEN_SIZE_3 * sizeof(float));
+    }
+
+    network->weights_hidden_3_output= (float **)malloc(HIDDEN_SIZE_2 * sizeof(float *));
+    for (int i = 0; i < HIDDEN_SIZE_3; i++) {
+        network->weights_hidden_3_output[i] = (float *)malloc(OUTPUT_SIZE * sizeof(float));
+    }
+}
+
+
+// 메모리 해제
+void free_weights(NeuralNetwork *network) {
+    for (int i = 0; i < INPUT_SIZE; i++) {
+        free(network->weights_input_hidden_1[i]);
+    }
+    free(network->weights_input_hidden_1);
+
+    for (int i = 0; i < HIDDEN_SIZE_1; i++) {
+        free(network->weights_hidden_1_hidden_2[i]);
+    }
+    free(network->weights_hidden_1_hidden_2);
+
+    for (int i = 0; i < HIDDEN_SIZE_2; i++) {
+        free(network->weights_hidden_2_hidden_3[i]);
+    }
+    free(network->weights_hidden_2_hidden_3);
+
+    for(int i = 0; i < HIDDEN_SIZE_3; i++)
+    {
+        free(network->weights_hidden_3_output[i]);
+    }
+    free(network -> weights_hidden_3_output);
+}
+
+
+
+// 신경망 초기화 (Xavier 초기화)
+void initialize_network(NeuralNetwork *network) {
+    allocate_weights(network);
+    srand(time(NULL));  // 랜덤 시드 초기화
+
+    // Xavier 초기화: 가중치 초기화
+    for (int i = 0; i < INPUT_SIZE; i++) {
+        for (int j = 0; j < HIDDEN_SIZE_1; j++) {
+            // Xavier 초기화: N(0, 1 / 입력 노드 수)
+            network->weights_input_hidden_1[i][j] = sqrt(1.0f / INPUT_SIZE) * ((float)rand() / RAND_MAX * 2.0f - 1.0f);
+        }
+    }
+
+    for (int i = 0; i < HIDDEN_SIZE_1; i++) {
+        for (int j = 0; j < HIDDEN_SIZE_2; j++) {
+            // Xavier 초기화
+            network->weights_hidden_1_hidden_2[i][j] = sqrt(1.0f / HIDDEN_SIZE_1) * ((float)rand() / RAND_MAX * 2.0f - 1.0f);
+        }
+    }
+
+    for (int i = 0; i < HIDDEN_SIZE_2; i++) {
+        for (int j = 0; j < HIDDEN_SIZE_3; j++) {
+            // Xavier 초기화
+            network->weights_hidden_2_hidden_3[i][j] = sqrt(1.0f / HIDDEN_SIZE_2) * ((float)rand() / RAND_MAX * 2.0f - 1.0f);
+        }
+    }
+
+    for(int i = 0; i < HIDDEN_SIZE_3; i++)
+    {
+        for(int j = 0; j < OUTPUT_SIZE; j++)
+        {
+            network->weights_hidden_3_output[i][j] = sqrt(1.0f / HIDDEN_SIZE_2) * ((float)rand() / RAND_MAX * 2.0f - 1.0f);
+        }
+    }
+
+    // Xavier 초기화는 편향에 적용되지 않으므로 편향은 0으로 초기화
+    for (int i = 0; i < HIDDEN_SIZE_1; i++) {
+        network->bias_hidden_1[i] = 0.0f;
+    }
+
+    for (int i = 0; i < HIDDEN_SIZE_2; i++) {
+        network->bias_hidden_2[i] = 0.0f;
+    }
+
+    for (int i = 0; i < HIDDEN_SIZE_3; i++)
+    {
+        network -> bias_hidden_3[i] = 0.0f;
+    }
+
+    for (int i = 0; i < OUTPUT_SIZE; i++) {
+        network->bias_output[i] = 0.0f;
+    }
+
+    // 초기 가중치 출력
+    printf("초기 가중치 (입력 -> 첫 번째 은닉층):\n");
+    for (int i = 0; i < 5; i++) {  // 첫 5개의 가중치만 출력
+        for (int j = 0; j < 5; j++) {
+            printf("%.4f ", network->weights_input_hidden_1[i][j]);
+        }
+        printf("\n");
+    }
+    printf("\n");
+
+    printf("초기 가중치 (첫 번째 은닉층 -> 두 번째 은닉층):\n");
+    for (int i = 0; i < 5; i++) {  // 첫 5개의 가중치만 출력
+        for (int j = 0; j < 5; j++) {
+            printf("%.4f ", network->weights_hidden_1_hidden_2[i][j]);
+        }
+        printf("\n");
+    }
+    printf("\n");
+
+    printf("초기 가중치 (두 번째 은닉층 -> 출력층):\n");
+    for (int i = 0; i < 5; i++) {  // 첫 5개의 가중치만 출력
+        for (int j = 0; j < 5; j++) {
+            printf("%.4f ", network->weights_hidden_2_hidden_3[i][j]);
+        }
+        printf("\n");
+    }
+    printf("\n");
+
+    printf("초기 가중치 (두 번째 은닉층 -> 출력층):\n");
+    for (int i = 0; i < 5; i++) {  // 첫 5개의 가중치만 출력
+        for (int j = 0; j < 5; j++) {
+            printf("%.4f ", network->weights_hidden_3_output[i][j]);
+        }
+        printf("\n");
+    }
+    printf("\n");
+
+    // 편향 출력 (0으로 초기화)
+    printf("초기 편향 (첫 번째 은닉층):\n");
+    for (int i = 0; i < 5; i++) {
+        printf("%.4f ", network->bias_hidden_1[i]);
+    }
+    printf("\n");
+
+    printf("초기 편향 (두 번째 은닉층):\n");
+    for (int i = 0; i < 5; i++) {
+        printf("%.4f ", network->bias_hidden_2[i]);
+    }
+    printf("\n");
+
+     printf("초기 편향 (세 번째 은닉층):\n");
+    for (int i = 0; i < 5; i++) {
+        printf("%.4f ", network->bias_hidden_3[i]);
+    }
+    printf("\n");
+
+    
+    printf("초기 편향 (출력층):\n");
+    for (int i = 0; i < 5; i++) {
+        printf("%.4f ", network->bias_output[i]);
+    }
+    printf("\n");
+
+}
+
+
+
+void print_weights(NeuralNetwork *network) {
+    for (int i = 0; i < 5; i++) {  // 첫 5개의 가중치만 출력
+        for (int j = 0; j < 5; j++) {
+            if(i == 0 && j == 0)
+            printf("%f ", network->weights_input_hidden_1[i][j]);
+        }
+        printf("\n");
+    }
+    printf("\n");
+    for (int i = 0; i < 5; i++) {  // 첫 5개의 가중치만 출력
+        for (int j = 0; j < 5; j++) {
+            if(i == 0 && j == 0)
+            printf("%f ", network->weights_hidden_1_hidden_2[i][j]);
+        }
+        printf("\n");
+    }
+    printf("\n");
+    for (int i = 0; i < 5; i++) {  // 첫 5개의 가중치만 출력
+        for (int j = 0; j < 5; j++) {
+            if(i == 0 && j == 0)
+            printf("%f ", network->weights_hidden_2_hidden_3[i][j]);
+        }
+        printf("\n");
+    }
+
+    for (int i = 0; i < 5; i++) {  // 첫 5개의 가중치만 출력
+        for (int j = 0; j < 5; j++) {
+            if(i == 0 && j == 0)
+            printf("%f ", network->weights_hidden_3_output[i][j]);
+        }
+        printf("\n");
+    }
+    printf("\n");
+}
+
+// 순전파
+void forward(NeuralNetwork *network) {
+    // 첫 번째 은닉층
+    for (int i = 0; i < HIDDEN_SIZE_1; i++) {
+        network->hidden_1[i] = 0.0f;
+        for (int j = 0; j < INPUT_SIZE; j++) {
+            network->hidden_1[i] += network->input[j] * network->weights_input_hidden_1[j][i];
+        }
+        network->hidden_1[i] += network->bias_hidden_1[i];
+        network->hidden_1[i] = relu(network->hidden_1[i]);  // 활성화 함수 적용
+        // printf("첫 번째 은닉층: %f\n", network -> hidden_1[i]);
+    }
+    // 두 번째 은닉층
+    for (int i = 0; i < HIDDEN_SIZE_2; i++) {
+        network->hidden_2[i] = 0.0f;
+        for (int j = 0; j < HIDDEN_SIZE_1; j++) {
+            network->hidden_2[i] += network->hidden_1[j] * network->weights_hidden_1_hidden_2[j][i];
+        }
+        network->hidden_2[i] += network->bias_hidden_2[i];
+        network->hidden_2[i] = relu(network->hidden_2[i]);  // 활성화 함수 적용
+        // printf("두 번째 은닉층: %f\n", network -> hidden_2[i]);
+    }
+
+    // 세 번째 은닉층
+    for (int i = 0; i < HIDDEN_SIZE_3; i++) {
+        network->hidden_3[i] = 0.0f;
+        for (int j = 0; j < HIDDEN_SIZE_2; j++) {
+            network->hidden_3[i] += network->hidden_2[j] * network->weights_hidden_2_hidden_3[j][i];
+        }
+        network->hidden_2[i] += network->bias_hidden_2[i];
+        network->hidden_2[i] = relu(network->hidden_2[i]);  // 활성화 함수 적용
+        // printf("두 번째 은닉층: %f\n", network -> hidden_2[i]);
+    }
+
+    // 출력층
+    for (int i = 0; i < OUTPUT_SIZE; i++) {
+        network->output[i] = 0.0f;
+        for (int j = 0; j < HIDDEN_SIZE_3; j++) {
+            network->output[i] += network->hidden_3[j] * network->weights_hidden_3_output[j][i];
+        }
+        network->output[i] += network->bias_output[i];
+        network->output[i] = sigmoid(network->output[i]);  // 출력 활성화 함수 적용
+        // printf("output: %f\n", network -> output[i]);
+    }
+}
+
+
+
+void backpropagate(NeuralNetwork *network, float target[]) {
+    // 출력층 오차 계산
+    float sum = 0;
+    for (int i = 0; i < OUTPUT_SIZE; i++) {
+        // printf("출력층 오차 계산\n");
+        // printf("%f = (%f - %f) * %f\n", network->output_error[i], network->output[i], target[i], sigmoid_derivative(network->output[i]));
+        network->output_error[i] = (network->output[i] - target[i]) * sigmoid_derivative(network->output[i]);
+    }
+
+
+    // 세 번째 은닉층 오차 계산
+    for (int i = 0; i < HIDDEN_SIZE_3; i++) {
+        //printf("\n두 번째 은닉층 오차 계산\n");
+        network->hidden_3_error[i] = 0.0f;
+        for (int j = 0; j < OUTPUT_SIZE; j++) {
+            network->hidden_3_error[i] += network->output_error[j] * network->weights_hidden_3_output[i][j];
+        }
+        network->hidden_3_error[i] = relu_derivative(network -> hidden_3_error[i]);  // ReLU의 도함수
+        //printf("network->hidden_2_error[i]: %f\n", network->hidden_2_error[i]);
+    }
+
+
+    // 두 번째 은닉층 오차 계산
+    for (int i = 0; i < HIDDEN_SIZE_2; i++) {
+        //printf("\n두 번째 은닉층 오차 계산\n");
+        network->hidden_2_error[i] = 0.0f;
+        for (int j = 0; j < OUTPUT_SIZE; j++) {
+            //printf("%f += %f * %f\n", network->hidden_2_error[i],  network->output_error[j], network->weights_hidden_2_output[i][j]);
+            network->hidden_2_error[i] += network->output_error[j] * network->weights_hidden_2_hidden_3[i][j];
+        }
+        network->hidden_2_error[i] = relu_derivative(network -> hidden_2_error[i]);  // ReLU의 도함수
+        //printf("network->hidden_2_error[i]: %f\n", network->hidden_2_error[i]);
+    }
+
+    // 첫 번째 은닉층 오차 계산
+    for (int i = 0; i < HIDDEN_SIZE_1; i++) {
+        network->hidden_1_error[i] = 0.0f;
+        for (int j = 0; j < HIDDEN_SIZE_2; j++) {
+            network->hidden_1_error[i] += network->hidden_2_error[j] * network->weights_hidden_1_hidden_2[i][j];
+            //printf("%f += %f * %f\n", network->hidden_1_error[i],  network->hidden_2_error[j], network->weights_hidden_1_hidden_2[i][j]);
+        }
+        network->hidden_1_error[i] = relu_derivative(network -> hidden_1_error[i]);  // ReLU의 도함수
+    }
+
+    // 가중치 및 편향 업데이트 (경사하강법)
+
+
+    for (int i = 0; i < OUTPUT_SIZE; i++) {
+        for (int j = 0; j < HIDDEN_SIZE_3; j++) {
+            network->weights_hidden_3_output[j][i] -= LEARNING_RATE * network->output_error[i] * network->hidden_3[j];
+        }
+        network->bias_output[i] -= LEARNING_RATE * network->output_error[i];
+    }
+    
+
+    for (int i = 0; i < HIDDEN_SIZE_3; i++) {
+        for (int j = 0; j < HIDDEN_SIZE_2; j++) {
+            network->weights_hidden_2_hidden_3[j][i] -= LEARNING_RATE * network->output_error[i] * network->hidden_2[j];
+        }
+        network->bias_hidden_3[i] -= LEARNING_RATE * network->hidden_3_error[i];
+    }
+
+
+    for (int i = 0; i < HIDDEN_SIZE_2; i++) {
+        for (int j = 0; j < HIDDEN_SIZE_1; j++) {
+            network->weights_hidden_1_hidden_2[j][i] -= LEARNING_RATE * network->hidden_2_error[i] * network->hidden_1[j];
+        }
+        network->bias_hidden_2[i] -= LEARNING_RATE * network->hidden_2_error[i];
+    }
+
+    for (int i = 0; i < HIDDEN_SIZE_1; i++) {
+        for (int j = 0; j < INPUT_SIZE; j++) {
+            network->weights_input_hidden_1[j][i] -= LEARNING_RATE * network->hidden_1_error[i] * network->input[j];
+        }
+        network->bias_hidden_1[i] -= LEARNING_RATE * network->hidden_1_error[i];
+    }
+}
+
+
+// 출력값 출력 (클래스 확률)
+void print_output(NeuralNetwork *network) {
+    printf("출력값 (클래스 확률):\n");
+    for (int i = 0; i < OUTPUT_SIZE; i++) {
+        printf("클래스 %d: %.4f\n", i, network->output[i]);
+    }
+
+    float max = 0;
+    int max_idx;
+    for(int i = 0; i < OUTPUT_SIZE; i++)
+    {
+        if(network -> output[i] >= max)
+        {
+            max = network -> output[i];
+            max_idx = i;
+        }
+    }
+
+    if(max_idx == 0)
+    {
+        printf("고양이\n");
+    }
+    else if(max_idx == 1)
+    {
+        printf("강아지\n");
+    }
+    else if(max_idx == 2)
+    {
+        printf("호랑이\n");
+    }
+    else
+    {
+        printf("하이에나\n");
+    }
+}
+
+void target_set(float target[4], char* animal)
+{   
+    for(int i = 0; i < 4; i++)
+    {
+        target[i] = 0;
+    }
+
+    if(strcmp(animal, "cat") == 0)
+    {
+        printf("고양이 학습\n");
+        target[0] = 1;
+    }
+    else if(strcmp(animal, "dog") == 0)
+    {
+        printf("강아지 학습\n");
+        target[1] = 1;
+    }
+    else if(strcmp(animal, "tiger") == 0)
+    {
+        printf("호랑이 학습\n");
+        target[2] = 1;
+    }
+    else
+    {
+        printf("하이에나 학습\n");
+        target[3] = 1;
+    }
+}
+
+void mse_print(NeuralNetwork* network, float target[OUTPUT_SIZE], int epoch)
+{
+    float sum = 0;
+    for(int i = 0; i < OUTPUT_SIZE; i++)
+    {
+        sum = sum + (network->output[i] - target[i]) * (network->output[i] - target[i]);
+    }
+    
+    printf("epoch: %d    오차: %f\n", epoch, sum / 4);
+    // mse 값을 파일에 기록
+    FILE* file = fopen("mse_values_3.txt", "a");
+    if (file != NULL) {
+        fprintf(file, "%f\n", sum / 4);  // mse 값 기록
+        fclose(file);
+    }
+}
+
+void train(NeuralNetwork* network, const char* filename, float target[OUTPUT_SIZE], char* animal, int epoch)
+{
+    read_and_normalize_bmp(filename, network -> input);
+    target_set(target, animal);
+    forward(network);
+    mse_print(network, target, epoch);
+    //printf("\n업데이트 전 \n");
+    //print_weights(network);
+    backpropagate(network, target);
+    // printf("\n업데이트 후 \n");
+    // print_weights(network);
+}
+
+
+int main() 
+{
+    NeuralNetwork network;
+    initialize_network(&network);
+
+    const char* cat_test = "images/cat/cat_988.bmp";
+    // 목표값 (예시: 고양이 -> [1, 0, 0, 0])
+    float target[OUTPUT_SIZE];
+
+    // 훈련 데이터에 대한 반복 학습
+    for (int epoch = 0; epoch < 5; epoch++) 
+    {
+        for(int i = 0; i < 900; i++)
+        {
+            char filename1[50], filename2[50], filename3[50], filename4[50];
+            FILE *file1, *file2, *file3, *file4;
+            sprintf(filename1, "images/cat/cat_%d.bmp", i);
+            sprintf(filename2, "images/dog/dog_%d.bmp", i);
+            sprintf(filename3, "images/tiger/tiger_%d.bmp", i);
+            sprintf(filename4, "images/hyena/hyena_%d.bmp", i);
+            file1 = fopen(filename1, "rb");
+            file2 = fopen(filename2, "rb");
+            file3 = fopen(filename3, "rb");
+            file4 = fopen(filename4, "rb");
+
+            if(file1 == NULL || file2 == NULL || file3 == NULL || file4 == NULL)
+            {
+                continue;
+            }
+            train(&network, filename1, target, "cat", epoch);
+            train(&network, filename2, target, "dog", epoch);
+            train(&network, filename3, target, "tiger", epoch);
+            train(&network, filename4, target, "hyena", epoch);
+            fclose(file1);
+            fclose(file2);
+            fclose(file3);
+            fclose(file4);
+        }
+    }
+
+    // 출력 결과 출력
+
+    read_and_normalize_bmp(cat_test, network.input);
+    print_output(&network);
+    free_weights(&network);
+    return 0;
+}
