@@ -1,0 +1,31 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+# mse_value.txt 파일에서 MSE 값 읽기
+mse_values = []
+with open('mse_values_1.txt', 'r') as file:
+    for line in file:
+        # 각 줄에서 숫자만 읽어와서 리스트에 추가
+        mse_values.append(float(line.strip()))
+
+# x 축의 값 (인덱스)
+x_values = list(range(len(mse_values)))
+
+# 그래프 그리기 (마커 없애기)
+plt.plot(x_values, mse_values, linestyle='-', color='b', label="MSE")
+
+# 축 설정
+plt.xlabel("Epoch")
+plt.ylabel("MSE Value")
+plt.title("mse_values_1")
+plt.grid(True)
+
+# x축 값 숨기기
+plt.xticks([])
+
+# y축 값 간격 조정
+plt.yticks([round(i, 5) for i in np.linspace(min(mse_values), max(mse_values), 10)])
+
+# 그래프 표시
+plt.legend()
+plt.show()
